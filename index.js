@@ -25,24 +25,37 @@ var Automerge = require('automerge'),
   // of all operations.
   var verbose = 0;
 
+  /**
+   * AutomergeController - description
+   *
+   * @param  {string} prefix prefix for event emitter
+   * @return {object}        instance of
+   */
   function AutomergeController(prefix) {
-    if (!(this instanceof AutomergeController)) return new AutomergeController();
+    if (!(this instanceof AutomergeController)) return new AutomergeController(prefix);
     this.docs = {}; // key is docid and val is automerge doc
     this.docSets = {}; // {key/property is docSet name, value is the actual doc set}
     this.setsToDocs = {};
     this.conns = {}; //  key ideally is a unique id for connection and val is automerge.connection
     this.connsToSets = {};
     this.isNotTesting = true;
-    this.prefix = prefix;
+    this.prefix = prefix || '';
     this.defDocSetID = null;
-    mc.call(this);
+    mc.call(this);  //replace mc with your own event emitter
     return this;
   }
+  //replace mc and inherits function with your event emitter and inherits utility
   inherits(mc, AutomergeController)
   /*
     MSG SECTION
   */
 
+  /**
+   * AutomergeController.prototype.setDefaultDocSetId - most function names are self descriptive
+   *
+   * @param  {type} docSetId description
+   * @return {type}          description
+   */
   AutomergeController.prototype.setDefaultDocSetId = function(docSetId) {
     if (typeof docSetId === 'string') this.defDocSetId = docSetId;
     else this.emit('error', 'setDefaultDoctSetId requires a string as a parameter');
@@ -51,7 +64,7 @@ var Automerge = require('automerge'),
   // Call this method whenever you receive an operation from a client.
   AutomergeController.prototype.handleMsg = function(msg) {
     if (!msg.type) msg.type = 'text';
-    if (this.defDocSetID && !msg.docSetId ) msg.docSetId = this.defDocSetID;
+    if (this.defDocSetID && !msg.docSetId) msg.docSetId = this.defDocSetID;
     this.docSet(msg.docSetId);
     this.msgDoc(msg.docSetId, msg.docId)
     this.receiveMsg(msg);
@@ -61,19 +74,19 @@ var Automerge = require('automerge'),
   AutomergeController.prototype.docSet = function(docSetId) {
     if (this.docSets[docSetId] === undefined) {
       this.docSets[docSetId] = new Automerge.DocSet();
-      this.docSets[docSetId].registerHandler(this.handleSetChange.bind(this));
+      this.docSets[docSetId].registerHandler(this.handleSetChange.bind(this, docSetId));
     }
   }
 
   AutomergeController.prototype.msgDoc = function(docSetId, docId) {
-    if (this.defDocSetID && !docSetId ) docSetId = this.defDocSetID;
-    if (typeof docSetId === 'string' && typeof docId === 'string') {
+    if (this.defDocSetID && !docSetId) docSetId = this.defDocSetID;
+    if (typeof docSetId === 'string' && (typeof docId === 'string' || !isNaN(docId))) {
       this.docs[docId] = this.docSets[docSetId].getDoc(docId);
-    }
+    } else this.emit('error', 'docSetID (string) and docId (unique Id) are both required')
   }
 
   AutomergeController.prototype.receiveMsg = function(msg) {
-    if (this.defDocSetID && !msg.docSetId ) msg.docSetId = this.defDocSetID;
+    if (this.defDocSetID && !msg.docSetId) msg.docSetId = this.defDocSetID;
     if (this.conns[msg.connId] && this.conns[msg.connId].conn) {
       this.conns[msg.connId].conn.receiveMsg(msg);
     } else ge('CONN DOES NOT EXIST!?', msg.connId, msg.docSetId);
@@ -81,36 +94,42 @@ var Automerge = require('automerge'),
 
   AutomergeController.prototype.connect = function(docSetId, connId) {
     //Connection requires DocSet
-    if (this.defDocSetID && !docSetId ) docSetId = this.defDocSetID;
+    if (this.defDocSetId && (!docSetId)) docSetId = this.defDocSetId;
     if (typeof connId === 'string' && typeof docSetId === 'string') {
       this.docSet(docSetId);
       if (this.conns[connId] === undefined) {
         this.conns[connId] = {
           lastActive: [],
-          conn: new Automerge.Connection(this.docSets[docSetId], this.send.bind(this, connId))
+          conn: new Automerge.Connection(this.docSets[docSetId], this.send.bind(this, connId, docSetId))
         };
         this.conns[connId].conn.open();
         this.connToSet(connId, docSetId);
-      } else this.conns[connId].send = send;
+      }
     } else this.emit('error', 'conn function required connId, docSetId (both strings) and send function');
     return this;
   }
 
-  AutomergeController.prototype.handleSetChange = function(docId, doc) {
-    if (this.docs[docId] && this.listeners('changes', true)) {
-      var nchanges = Automerge.diff(this.docs[docId], doc);
+  AutomergeController.prototype.handleSetChange = function(docSetId, docId, doc) {
+    var docPath = this.prefix + docSetId + '/' + docId + '/changes';
+    if (docId && this.docs[docId] && this.listeners(docPath, true)) {
+      var nchanges = Automerge.diff(this.docs[docId], doc),
+        achanges = Automerge.getChanges(this.docs[docId], doc);
       this.docs[docId] = doc;
-      this.emit('changes', nchanges)
-    }
+      if (nchanges.length > 0) this.emit(docPath, nchanges)
+    } //else this.emit('error', 'handleSetChange passed no argument or no/nonexistent doc');
   }
 
-  AutomergeController.prototype.send = function(connId, data) {
-    this.emit('send', connId, data);
+  AutomergeController.prototype.send = function(connId, docSetId, data) {
+    data.connId = connId;
+    data.route = this.prefix + docSetId
+    this.emit('send', data);
   }
 
   AutomergeController.prototype.close = function(connId) {
-    ge('closing connection ', connId)
-    if (typeof connId === 'string' && this.conns[connId] && this.conns[connId].conn) this.conns[connId].conn.close();
+    if (typeof connId === 'string' && this.conns[connId] && this.conns[connId].conn) {
+      this.conns[connId].conn.close();
+      delete this.conns[connId]
+    }
     else this.emit('error', 'close connection called on non existent connection:' + connId);
   }
 
@@ -121,9 +140,10 @@ var Automerge = require('automerge'),
   }
 
   AutomergeController.prototype.createDoc = function(docId, docSetId, type = 'text', initContent) {
-    if (this.defDocSetID && !docSetId ) docSetId = this.defDocSetID;
+    if (this.defDocSetID && !docSetId) docSetId = this.defDocSetID;
     if (this.docs[docId] === undefined) {
       this.docs[docId] = Automerge.change(Automerge.init(), 'new doc', this.initText.bind(this, initContent));
+      ge(this.docs[docId])
       this.setToDoc(docSetId, docId);
     }
     return this.docs[docId];
@@ -135,10 +155,14 @@ var Automerge = require('automerge'),
   }
 
   AutomergeController.prototype.loadDoc = function(docId, amdata, docSetId) {
-    if (this.defDocSetID && !docSetId ) docSetId = this.defDocSetID;
-    this.docSet(docSetId);
-    this.docs[docId] = Automerge.load(amdata);
-    this.setToDoc(docSetId, docId);
+    if (this.defDocSetId && !docSetId) docSetId = this.defDocSetId;
+    if (typeof docSetId === 'string' && (typeof docId === 'string' || !isNaN(docId)) && amdata) {
+      this.docSet(docSetId);
+      if (typeof amdata !== 'string') amdata = JSON.stringify(amdata);
+      this.docs[docId] = Automerge.load(amdata);
+      this.setToDoc(docSetId, docId);
+      this.emit('docLoaded', docId, this.docs[docId].text.join(''))
+    } else emit('error', 'loadDoc requires docId, amdata and docsetid');
     return this;
   }
 
@@ -146,12 +170,16 @@ var Automerge = require('automerge'),
   //-------------------Basic Text Operations -------------------------
 
   AutomergeController.prototype.handleChanges = function(docId, changes) {
-    this.docs[docId] = Automerge.change(this.docs[docId], this.doChanges.bind(this, changes));
-    this.setToDoc(null, docId);
+    if ((typeof docId === 'string' || !isNaN(docId)) && this.docs[docId]) {
+      this.docs[docId] = Automerge.change(this.docs[docId], this.doChanges.bind(this, changes));
+      this.setToDoc(null, docId);
+    } else this.emit('error', 'handleChanges requires docId and changes');
   }
   AutomergeController.prototype.doChanges = function(changes, doc) {
-    var i = 0, len = changes.length, cchange;
-    for (; i < len; i++){
+    var i = 0,
+      len = changes.length,
+      cchange;
+    for (; i < len; i++) {
       cchange = changes[i];
       if (cchange[0] === '-') this.textRem(cchange[1], cchange[2], doc);
       else this.textIns(cchange[1], cchange[2], doc);
@@ -178,14 +206,14 @@ var Automerge = require('automerge'),
 
 
   AutomergeController.prototype.connToSet = function(connId, docSetId) {
-    if (this.defDocSetID && !docSetId ) docSetId = this.defDocSetID;
+    if (this.defDocSetID && !docSetId) docSetId = this.defDocSetID;
     if (this.connsToSets[connId] === undefined) this.connsToSets[connId] = [];
     if (this.connsToSets[connId].indexOf(docSetId) === -1) this.connsToSets[connId].push(docSetId);
   }
 
   //generally 2 use cases - when creating a new doc or when changing a doc and having to reset link to docset
   AutomergeController.prototype.setToDoc = function(docSetId, docId) {
-    if (this.defDocSetID && !docSetId ) docSetId = this.defDocSetID;
+    if (this.defDocSetID && !docSetId) docSetId = this.defDocSetID;
     if (docSetId) {
       if (this.setsToDocs[docSetId] === undefined) this.setsToDocs[docSetId] = [];
       if (this.setsToDocs[docSetId].indexOf(docId) === -1) this.setsToDocs[docSetId].push(docId);
