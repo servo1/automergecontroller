@@ -3,8 +3,8 @@ Automerge Controller/Coordinator for multiple connections, docSets and documents
 
 This will handle multiple connections to the same client, centralized documents and docSets.  docIds must be unique as well as docSets.  The connections also must be unique per connection.  For example, if one client is connected to 3 other clients, the connection Ids used to connect them must all be different.
 
+You will need to replace 'mc' as it's used as an eventemitter with your own.  This is a WIP.
 ##Example usage:
-You will need to replace 'mc' as it's used as an eventemitter with your own.
 
 One the client:
 ```
